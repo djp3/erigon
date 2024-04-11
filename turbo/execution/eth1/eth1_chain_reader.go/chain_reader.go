@@ -266,8 +266,6 @@ func (c ChainReaderWriterEth1) FrozenBlocks(ctx context.Context) uint64 {
 	return ret.FrozenBlocks
 }
 
-const retryTimeout = 10 * time.Millisecond
-
 func (c ChainReaderWriterEth1) InsertBlocksAndWait(ctx context.Context, blocks []*types.Block) error {
 	request := &execution.InsertBlocksRequest{
 		Blocks: eth1_utils.ConvertBlocksToRPC(blocks),
@@ -276,22 +274,29 @@ func (c ChainReaderWriterEth1) InsertBlocksAndWait(ctx context.Context, blocks [
 	if err != nil {
 		return err
 	}
-	retryInterval := time.NewTicker(retryTimeout)
-	defer retryInterval.Stop()
+
+	// limit the number of retries
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
 
 	for response.Result == execution.ExecutionStatus_Busy {
+		const retryDelay = 1 * time.Second
+		delayTimer := time.NewTimer(retryDelay)
+
 		select {
-		case <-retryInterval.C:
-			response, err = c.executionModule.InsertBlocks(ctx, request)
-			if err != nil {
-				return err
-			}
+		case <-delayTimer.C:
 		case <-ctx.Done():
+			delayTimer.Stop()
 			return ctx.Err()
+		}
+
+		response, err = c.executionModule.InsertBlocks(ctx, request)
+		if err != nil {
+			return err
 		}
 	}
 	if response.Result != execution.ExecutionStatus_Success {
-		return fmt.Errorf("insertHeadersAndWait: invalid code recieved from execution module: %s", response.Result.String())
+		return fmt.Errorf("InsertBlocksAndWait: executionModule.InsertBlocks ExecutionStatus = %s", response.Result.String())
 	}
 	return nil
 }
@@ -316,31 +321,7 @@ func (c ChainReaderWriterEth1) InsertBlocks(ctx context.Context, blocks []*types
 
 func (c ChainReaderWriterEth1) InsertBlockAndWait(ctx context.Context, block *types.Block) error {
 	blocks := []*types.Block{block}
-	request := &execution.InsertBlocksRequest{
-		Blocks: eth1_utils.ConvertBlocksToRPC(blocks),
-	}
-
-	response, err := c.executionModule.InsertBlocks(ctx, request)
-	if err != nil {
-		return err
-	}
-	retryInterval := time.NewTicker(retryTimeout)
-	defer retryInterval.Stop()
-	for response.Result == execution.ExecutionStatus_Busy {
-		select {
-		case <-retryInterval.C:
-			response, err = c.executionModule.InsertBlocks(ctx, request)
-			if err != nil {
-				return err
-			}
-		case <-ctx.Done():
-			return context.Canceled
-		}
-	}
-	if response.Result != execution.ExecutionStatus_Success {
-		return fmt.Errorf("insertHeadersAndWait: invalid code recieved from execution module: %s", response.Result.String())
-	}
-	return c.InsertBlocksAndWait(ctx, []*types.Block{block})
+	return c.InsertBlocksAndWait(ctx, blocks)
 }
 
 func (c ChainReaderWriterEth1) ValidateChain(ctx context.Context, hash libcommon.Hash, number uint64) (execution.ExecutionStatus, *string, libcommon.Hash, error) {
