@@ -236,6 +236,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// until EOF, writes the response to w, and orders the server to process a
 	// single request.
 	ctx := r.Context()
+
+	// The context might be cancelled if the client's connection was closed while waiting for ServeHTTP.
+	if ctx.Err() != nil {
+		return
+	}
+
 	ctx = context.WithValue(ctx, "remote", r.RemoteAddr)
 	ctx = context.WithValue(ctx, "scheme", r.Proto)
 	ctx = context.WithValue(ctx, "local", r.Host)
